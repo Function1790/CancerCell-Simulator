@@ -1,19 +1,27 @@
 //from HTML
 const stateView = document.getElementById("state")
+const nutrientView = document.getElementById("nutrient")
 const canvas = document.getElementById("canvas")
 const ctx = canvas.getContext("2d")
 
 //Constant
-const CrushForce = 0.1
+const CollideForce = 0.1
 const CellSize = 10
-const CellDivision_Period = 300
+const CellDivision_Period = 1000
 const NormalCell_Telomere = 5
+const InitialLifeValue = 500
+const InitiaNutrient = 100
 
 const NucleusSize = CellSize / 4
 const PI2 = Math.PI * 2
+const BoundaryX = canvas.width - CellSize * 2
+const BoundaryY = canvas.height - CellSize * 2
 
-const limitX = canvas.width - CellSize * 2
-const limitY = canvas.height - CellSize * 2
+//Variable
+let nutrient = InitiaNutrient
+let renderList = []
+let destroyList = []
+let createList = []
 
 //Function
 const print = (t) => { console.log(t) }
@@ -66,25 +74,46 @@ function processOverlap(A, B) {
     const r = (A.r + B.r) ** 2
 
     if (distance < r) {
-        //let delta = new Vector(sym(A.x - B.x) * CrushForce, sym(A.y - B.y) * CrushForce)
+        //let delta = new Vector(sym(A.x - B.x) * CollideForce, sym(A.y - B.y) * CollideForce)
         let delta = new Vector(A.x - B.x, A.y - B.y)
-        delta.mul(CrushForce * 0.05)
+        delta.mul(CollideForce * 0.1)
         A.pos.add(delta)
         B.pos.sub(delta)
     }
 }
 
+function interactionBetween(A, B) {
+    processOverlap(A, B)
+}
+
 function reachWall(axis, wall) {
     if (axis < 30) {
-        return CrushForce
+        return CollideForce
     }
     else if (axis > wall) {
-        return -CrushForce
+        return -CollideForce
     }
     return 0
 }
 
 //Class
+class Color {
+    constructor(r, g, b, a) {
+        this.r = r
+        this.g = g
+        this.b = b
+        this.a = a
+    }
+    toCSS() {
+        return `rgba(${this.r},${this.g},${this.b},${this.a})`
+    }
+    copy() {
+        return new Color(this.r, this.g, this.b, this.a)
+    }
+}
+const NormalCell_Color = new Color(255, 155, 90, 0.6)
+const CancerCell_Color = new Color(90, 180, 255, 0.6)
+
 class Vector {
     constructor(x, y) {
         this.x = x
@@ -112,16 +141,19 @@ class Vector {
 }
 
 class Cell {
-    constructor(x, y, r, telomere, color) {
+    constructor(x, y, r, telomere, color, consumeAmount = 1) {
         this.pos = new Vector(x, y)
         this.r = r
         this.default_r = r
         this.color = color
 
+        this.life = InitialLifeValue
+
         this.telomere = telomere
         this.grow_tick = 0
         this.division_period = random(CellDivision_Period / 2) + CellDivision_Period
         this.S_period = this.division_period * 0.6
+        this.consumeAmount = consumeAmount
     }
     get x() {
         return this.pos.x
@@ -129,23 +161,39 @@ class Cell {
     get y() {
         return this.pos.y
     }
+    eatNutrient() {
+        if (nutrient < 1) {
+            this.dying()
+            return false
+        }
+        return true
+    }
     grow() {
+        if (this.eatNutrient() == false) {
+            return
+        }
+
         this.grow_tick++
+
+        if (this.grow_tick % 200 == 0) {
+            nutrient -= this.consumeAmount
+        }
+
         this.r += this.grow_tick * 0.000005
         if (this.grow_tick > this.division_period) {
             this.divide()
         }
     }
     move() {
-        this.pos.x += reachWall(this.x, limitX)
-        this.pos.y += reachWall(this.y, limitY)
+        this.pos.x += reachWall(this.x, BoundaryX)
+        this.pos.y += reachWall(this.y, BoundaryY)
     }
     draw() {
-        selectColor(this.color)
+        selectColor(this.color.toCSS())
         drawCricle(this.x, this.y, this.r)
 
         //세포핵
-        selectColor("rgba(0,0,0,0.8)")
+        selectColor(`rgba(0,0,0,${this.color.a + 0.3})`)
         if (this.grow_tick > this.S_period) {
             drawCricle(this.x - NucleusSize / 2, this.y, NucleusSize)
             drawCricle(this.x + NucleusSize / 2, this.y, NucleusSize)
@@ -153,6 +201,15 @@ class Cell {
         else {
             drawCricle(this.x, this.y, NucleusSize)
         }
+    }
+    dying() {
+        this.life--
+        if (this.color.a > 0.2 && this.life <= 0) {
+            this.color.a -= 0.001
+        }
+    }
+    destroySelf() {
+        pushDesctroyObject(this)
     }
     divide() {
         const telomere = this.telomere - 1
@@ -162,14 +219,14 @@ class Cell {
             createList.push(new Cell(this.x - delta[0], this.y - delta[1], this.default_r, telomere, this.color))
         }
         this.grow = () => { }
-        pushDesctroyObject(this)
+        this.destroySelf()
     }
 }
 
 class CancerCell extends Cell {
     constructor(x, y, r) {
-        super(x, y, r, 10, "rgba(90,180,255,0.5)")
-
+        super(x, y, r, 10, CancerCell_Color.copy(), 2)
+        this.vel = new Vector(0, 0)
     }
     divide() {
         const telomere = this.telomere
@@ -181,19 +238,32 @@ class CancerCell extends Cell {
         this.grow = () => { }
         pushDesctroyObject(this)
     }
+    move() {
+        super.move()
+        this.pos.add(this.vel)
+    }
+    eatNutrient() {
+        const result = super.eatNutrient()
+        if (result == false) {
+
+        }
+        return result
+    }
 }
 
 //About Render
-function renderObject() {
+function processRenderObject() {
+    // Render & Behave
     for (var i = 0; i < renderList.length; i++) {
         renderList[i].draw()
         renderList[i].grow()
         renderList[i].move()
         for (var j = i + 1; j < renderList.length; j++) {
-            processOverlap(renderList[i], renderList[j])
+            interactionBetween(renderList[i], renderList[j])
         }
     }
 
+    // Destroy
     for (var i = destroyList.length - 1; i >= 0; i--) {
         if (destroyList[i] == -1) {
             print("Index -1")
@@ -201,6 +271,7 @@ function renderObject() {
         renderList.splice(destroyList[i], 1)
     }
 
+    // Create
     for (var i = createList.length - 1; i >= 0; i--) {
         renderList.push(createList[i])
     }
@@ -209,23 +280,25 @@ function renderObject() {
     createList = []
 }
 
-let renderList = []
-let destroyList = []
-let createList = []
+for (var i = 0; i < 40; i++) {
+    renderList.push(new Cell(random(BoundaryX), random(BoundaryY), CellSize, NormalCell_Telomere, NormalCell_Color.copy()))
+}
 
-for (var i = 0; i < 20; i++) {
-    if (randSym() == 1) {
-        renderList.push(new Cell(random(limitX), random(limitY), CellSize, NormalCell_Telomere, "rgba(255,155,90,0.5)"))
-    } else {
-        renderList.push(new CancerCell(random(limitX), random(limitY), CellSize + 2))
-    }
+for (var i = 0; i < 4; i++) {
+    renderList.push(new CancerCell(random(BoundaryX), random(BoundaryY), CellSize + 2))
 }
 
 function render() {
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-    renderObject()
-    stateView.innerText=`Cell : ${renderList.length}`
+    processRenderObject()
+
+    // Data Viewer in HTML
+    if (nutrient < 0) {
+        nutrient = 0
+    }
+    stateView.innerText = `Cell : ${renderList.length}`
+    nutrientView.innerText = `Nutrient : ${nutrient}`
 
     requestAnimationFrame(render)
 }
